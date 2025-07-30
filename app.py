@@ -1,9 +1,16 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import openai
+import os
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for frontend communication
+CORS(app)
+
+# ✅ Use the official OpenAI client with project support
+client = openai.OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY"),
+    project=os.getenv("OPENAI_PROJECT_ID")  # required for sk-proj keys
+)
 
 @app.route("/")
 def home():
@@ -18,12 +25,11 @@ def chat():
         if not message:
             return jsonify({"error": "No message provided"}), 400
 
-        client = openai.OpenAI(api_key="sk-proj...")
-
+        # 🧠 Chat completion request
         response = client.chat.completions.create(
-            model="gpt-4",  # or "gpt-3.5-turbo" if you prefer
+            model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are a helpful assistant that speaks both English and Spanish."},
+                {"role": "system", "content": "You are a helpful assistant that answers user questions politely."},
                 {"role": "user", "content": message}
             ],
             temperature=0.7
@@ -38,13 +44,17 @@ def chat():
 
 @app.route("/lead", methods=["POST"])
 def capture_lead():
-    data = request.get_json()
-    name = data.get("name")
-    phone = data.get("phone")
-    location = data.get("location")
+    try:
+        data = request.get_json()
+        name = data.get("name")
+        phone = data.get("phone")
+        location = data.get("location")
 
-    print(f"📩 New lead received: {name}, {phone}, {location}")
-    return jsonify({"status": "success", "message": "Lead captured"})
+        print(f"📩 New lead received: {name}, {phone}, {location}")
+        return jsonify({"status": "success", "message": "Lead captured"})
+    except Exception as e:
+        print("❌ Error in /lead:", e)
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001)
+    app.run(host="0.0.0.0", port=5001, debug=True)
