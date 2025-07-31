@@ -4,14 +4,15 @@ import openai
 import os
 from gtts import gTTS
 import uuid
+import langdetect
 
 app = Flask(__name__)
 CORS(app)
 
-# ✅ Use the official OpenAI client with project support
+# ✅ OpenAI client using environment variables (Render safe)
 client = openai.OpenAI(
     api_key=os.getenv("OPENAI_API_KEY"),
-    project=os.getenv("OPENAI_PROJECT_ID")  # required for sk-proj keys
+    project=os.getenv("OPENAI_PROJECT_ID")
 )
 
 @app.route("/")
@@ -23,12 +24,12 @@ def chat():
     try:
         data = request.get_json()
         message = data.get("message", "")
-        is_voice = data.get("voice", False)  # From frontend
+        is_voice = data.get("voice", False)  # Sent from frontend
 
         if not message:
             return jsonify({"error": "No message provided"}), 400
 
-        # 🧠 Chat completion request
+        # 🧠 Get assistant reply
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
@@ -42,11 +43,11 @@ def chat():
         )
 
         reply = response.choices[0].message.content.strip()
-
         result = {"reply": reply}
 
+        # 🔊 Only generate audio if input was voice
         if is_voice:
-            lang = "es" if is_spanish(reply) else "en"
+            lang = detect_language(reply)
             tts = gTTS(text=reply, lang=lang)
             filename = f"{uuid.uuid4().hex}.mp3"
             filepath = os.path.join("static", filename)
@@ -77,9 +78,13 @@ def capture_lead():
 def get_audio(filename):
     return app.send_static_file(filename)
 
-def is_spanish(text):
-    spanish_keywords = ["el", "la", "los", "hola", "gracias", "internet", "precio", "cuánto"]
-    return any(word.lower() in text.lower() for word in spanish_keywords)
+# ✅ Better language detection using langdetect
+def detect_language(text):
+    try:
+        lang = langdetect.detect(text)
+        return "es" if lang == "es" else "en"
+    except:
+        return "en"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001, debug=True)
