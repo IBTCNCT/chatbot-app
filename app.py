@@ -5,6 +5,8 @@ import os
 from gtts import gTTS
 import uuid
 import langdetect
+import gspread
+from google.oauth2.service_account import Credentials
 
 app = Flask(__name__)
 CORS(app)
@@ -14,6 +16,19 @@ client = openai.OpenAI(
     api_key=os.getenv("OPENAI_API_KEY"),
     project=os.getenv("OPENAI_PROJECT_ID")
 )
+
+# ✅ Google Sheets setup
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+SERVICE_ACCOUNT_FILE = "ibt-chatbot-integration.json"  # This file should be in the same folder as this script
+
+credentials = Credentials.from_service_account_file(
+    SERVICE_ACCOUNT_FILE, scopes=SCOPES
+)
+gc = gspread.authorize(credentials)
+
+# 📝 Use your actual spreadsheet ID and sheet name
+SPREADSHEET_ID = "1CLiNQKabUCoxK0uhLAuhvOOuJymUSLY4yzmGmZ8hSTU"
+worksheet = gc.open_by_key(SPREADSHEET_ID).Leads
 
 @app.route("/")
 def home():
@@ -64,11 +79,18 @@ def chat():
 def capture_lead():
     try:
         data = request.get_json()
-        name = data.get("name")
-        phone = data.get("phone")
-        location = data.get("location")
+        name = (data.get("name") or "").strip()
+        phone = (data.get("phone") or "").strip()
+        location = (data.get("location") or "").strip()
+
+        if not name and not phone and not location:
+            return jsonify({"error": "Missing lead information"}), 400
 
         print(f"📩 New lead received: {name}, {phone}, {location}")
+
+        # 📝 Append to Google Sheet
+        worksheet.append_row([name, phone, location])
+
         return jsonify({"status": "success", "message": "Lead captured"})
     except Exception as e:
         print("❌ Error in /lead:", e)
