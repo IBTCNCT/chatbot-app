@@ -4,5 +4,6 @@ openai
 gTTS
 gunicorn
 langdetect
-google-api-python-client
+gspread
 google-auth
+google-api-python-client
