@@ -8,13 +8,11 @@ import langdetect
 import gspread
 from google.oauth2.service_account import Credentials
 import json
+from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)
 
-# ---------------------------
-# Existing config (unchanged)
-# ---------------------------
 # ✅ OpenAI client using environment variables (Render safe)
 client = openai.OpenAI(
     api_key=os.getenv("OPENAI_API_KEY"),
@@ -47,44 +45,6 @@ try:
 except Exception:
     worksheet = sh.sheet1
 
-# ---------------------------
-# New: in-memory session store
-# ---------------------------
-# Format per session:
-# {
-#   "message_count": int,
-#   "collecting_lead": bool,
-#   "lead_step": int,   # 1=name, 2=phone, 3=location
-#   "lead_data": {"name": "", "phone": "", "location": ""}
-# }
-sessions = {}
-
-def get_session_key():
-    """Return session key from request JSON 'session_id' or fallback to remote IP."""
-    body = {}
-    try:
-        body = request.get_json(force=False) or {}
-    except Exception:
-        body = {}
-    session_id = body.get("session_id")
-    if session_id:
-        return f"sid:{session_id}"
-    # fallback: use remote address (note: not perfect for many users behind same IP)
-    return f"ip:{request.remote_addr}"
-
-def get_or_create_session(key):
-    if key not in sessions:
-        sessions[key] = {
-            "message_count": 0,
-            "collecting_lead": False,
-            "lead_step": 0,
-            "lead_data": {"name": "", "phone": "", "location": ""}
-        }
-    return sessions[key]
-
-# ---------------------------
-# Routes (mostly unchanged)
-# ---------------------------
 @app.route("/")
 def home():
     return "<h1>✅ IBT Connect Flask Server is Running</h1>"
@@ -99,97 +59,7 @@ def chat():
         if not message:
             return jsonify({"error": "No message provided"}), 400
 
-        # identify session
-        session_key = get_session_key()
-        session = get_or_create_session(session_key)
-
-        # If we're currently collecting lead info, handle that flow server-side.
-        if session["collecting_lead"]:
-            lead_step = session["lead_step"]
-            # Step 1: collect name
-            if lead_step == 1:
-                session["lead_data"]["name"] = (message or "").strip()
-                session["lead_step"] = 2
-                reply_text = "Thanks! What's the best phone number to reach you?"
-                result = {"reply": reply_text}
-                if is_voice:
-                    lang = detect_language(reply_text)
-                    tts = gTTS(text=reply_text, lang=lang)
-                    filename = f"{uuid.uuid4().hex}.mp3"
-                    filepath = os.path.join("static", filename)
-                    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                    tts.save(filepath)
-                    result["audio_url"] = f"/audio/{filename}"
-                return jsonify(result)
-
-            # Step 2: collect phone
-            if lead_step == 2:
-                session["lead_data"]["phone"] = (message or "").strip()
-                session["lead_step"] = 3
-                reply_text = "Great — and your city or ZIP code?"
-                result = {"reply": reply_text}
-                if is_voice:
-                    lang = detect_language(reply_text)
-                    tts = gTTS(text=reply_text, lang=lang)
-                    filename = f"{uuid.uuid4().hex}.mp3"
-                    filepath = os.path.join("static", filename)
-                    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                    tts.save(filepath)
-                    result["audio_url"] = f"/audio/{filename}"
-                return jsonify(result)
-
-            # Step 3: collect location, save lead, finish
-            if lead_step == 3:
-                session["lead_data"]["location"] = (message or "").strip()
-                # append to Google Sheet
-                name = session["lead_data"]["name"]
-                phone = session["lead_data"]["phone"]
-                location = session["lead_data"]["location"]
-                try:
-                    worksheet.append_row([name, phone, location])
-                except Exception as sheet_err:
-                    print("❌ Error appending to sheet:", sheet_err)
-                    # continue anyway
-
-                # Prepare final reply
-                reply_text = "✅ Thanks! We've saved your info — we'll reach out soon. How else can I help?"
-                # Reset session lead info and counters
-                session["collecting_lead"] = False
-                session["lead_step"] = 0
-                session["lead_data"] = {"name": "", "phone": "", "location": ""}
-                session["message_count"] = 0
-
-                result = {"reply": reply_text}
-                if is_voice:
-                    lang = detect_language(reply_text)
-                    tts = gTTS(text=reply_text, lang=lang)
-                    filename = f"{uuid.uuid4().hex}.mp3"
-                    filepath = os.path.join("static", filename)
-                    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                    tts.save(filepath)
-                    result["audio_url"] = f"/audio/{filename}"
-                return jsonify(result)
-
-        # If not collecting lead, increment message count and maybe trigger lead flow
-        session["message_count"] += 1
-
-        # Start lead collection automatically after 3 user messages
-        if session["message_count"] >= 3 and not session["collecting_lead"]:
-            session["collecting_lead"] = True
-            session["lead_step"] = 1
-            reply_text = "Before we continue, can I grab your name?"
-            result = {"reply": reply_text}
-            if is_voice:
-                lang = detect_language(reply_text)
-                tts = gTTS(text=reply_text, lang=lang)
-                filename = f"{uuid.uuid4().hex}.mp3"
-                filepath = os.path.join("static", filename)
-                os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                tts.save(filepath)
-                result["audio_url"] = f"/audio/{filename}"
-            return jsonify(result)
-
-        # Normal behavior: call OpenAI and return assistant reply
+        # 🧠 Get assistant reply
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
@@ -211,6 +81,7 @@ def chat():
             tts = gTTS(text=reply, lang=lang)
             filename = f"{uuid.uuid4().hex}.mp3"
             filepath = os.path.join("static", filename)
+            # Ensure static directory exists (Render will serve from static)
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             tts.save(filepath)
             result["audio_url"] = f"/audio/{filename}"
@@ -223,21 +94,49 @@ def chat():
 
 @app.route("/lead", methods=["POST"])
 def capture_lead():
+    """
+    This endpoint accepts partial lead data and returns either:
+    - a prompt to request the next missing field (status: "incomplete"),
+    - or appends the lead to Google Sheets and returns success (status: "success").
+    It expects JSON: { name?, phone?, email?, location? }
+    """
     try:
         data = request.get_json()
         name = (data.get("name") or "").strip()
         phone = (data.get("phone") or "").strip()
+        email = (data.get("email") or "").strip()
         location = (data.get("location") or "").strip()
 
-        if not name and not phone and not location:
-            return jsonify({"error": "Missing lead information"}), 400
+        # If no fields at all, ask for name to start
+        if not name and not phone and not email and not location:
+            return jsonify({"status": "incomplete", "next": "Hi! Can I grab your name?"}), 200
 
-        print(f"📩 New lead received: {name}, {phone}, {location}")
+        # If we have a name but not a phone yet, ask for phone
+        if name and not phone and not email:
+            return jsonify({"status": "incomplete", "next": "Thanks! What’s the best phone number to reach you?"}), 200
 
-        # 📝 Append to Google Sheet
-        worksheet.append_row([name, phone, location])
+        # If we have name and phone but not email, ask for email (this is your requested flow)
+        if name and phone and not email:
+            return jsonify({"status": "incomplete", "next": "Great — could I get your email address so we can follow up?"}), 200
 
-        return jsonify({"status": "success", "message": "Lead captured"})
+        # If we have phone but no name, ask for name
+        if phone and not name and not email:
+            return jsonify({"status": "incomplete", "next": "Thanks — may I have your name, please?"}), 200
+
+        # If we have email but missing name/phone, still proceed but prefer to ask for name
+        if email and not name:
+            return jsonify({"status": "incomplete", "next": "Thanks! What name should we use for this lead?"}), 200
+
+        # If we reached here, we have at least some contact info (preferably email or phone).
+        # We'll append whatever we have to the sheet (include timestamp).
+        timestamp = datetime.utcnow().isoformat()
+        row = [timestamp, name or "-", phone or "-", email or "-", location or "-"]
+        worksheet.append_row(row)
+
+        print(f"📩 New lead saved: {row}")
+
+        return jsonify({"status": "success", "message": "Lead captured", "lead": {"name": name, "phone": phone, "email": email, "location": location}}), 200
+
     except Exception as e:
         print("❌ Error in /lead:", e)
         return jsonify({"error": str(e)}), 500
