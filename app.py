@@ -7,6 +7,7 @@ import uuid
 import langdetect
 import gspread
 from google.oauth2.service_account import Credentials
+import json
 
 app = Flask(__name__)
 CORS(app)
@@ -19,16 +20,29 @@ client = openai.OpenAI(
 
 # ✅ Google Sheets setup
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-SERVICE_ACCOUNT_FILE = "ibt-chatbot-integration.json"  # This file should be in the same folder as this script
 
-credentials = Credentials.from_service_account_file(
-    SERVICE_ACCOUNT_FILE, scopes=SCOPES
-)
+# Support both local file (for local dev) and environment variable (for Render)
+SERVICE_ACCOUNT_FILE = "ibt-chatbot-integration.json"  # local fallback filename
+
+if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"):
+    # On Render: read the full JSON from an environment variable (recommended)
+    SERVICE_ACCOUNT_INFO = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
+    credentials = Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=SCOPES)
+else:
+    # Local: read the file from disk (make sure it's present locally; it's in .gitignore)
+    credentials = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+
 gc = gspread.authorize(credentials)
 
-# 📝 Use your actual spreadsheet ID and sheet name
+# 📝 Use your actual spreadsheet ID (from the sheet URL)
 SPREADSHEET_ID = "1CLiNQKabUCoxK0uhLAuhvOOuJymUSLY4yzmGmZ8hSTU"
-worksheet = gc.open_by_key(SPREADSHEET_ID).Leads
+
+# Try to open a worksheet named "Leads", otherwise fall back to the first sheet.
+sh = gc.open_by_key(SPREADSHEET_ID)
+try:
+    worksheet = sh.worksheet("Leads")
+except Exception:
+    worksheet = sh.sheet1
 
 @app.route("/")
 def home():
@@ -66,6 +80,8 @@ def chat():
             tts = gTTS(text=reply, lang=lang)
             filename = f"{uuid.uuid4().hex}.mp3"
             filepath = os.path.join("static", filename)
+            # Ensure static directory exists (Render will serve from static)
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
             tts.save(filepath)
             result["audio_url"] = f"/audio/{filename}"
 
